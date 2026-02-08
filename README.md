@@ -2,7 +2,35 @@
 
 This repository contains code for training and evaluating a ResNet50 model on the LungHist700 dataset. It includes both the original TensorFlow/Keras implementation (cpu-compatible) and a new, optimized PyTorch implementation (gpu-accelerated).
 
-## 🚀 Quick Start (PyTorch)
+## � Methodology Overview
+
+The project follows a rigorous training and evaluation pipeline designed to ensure reproducibility and prevent data leakage.
+
+```mermaid
+graph LR
+    DATA[Raw LungHist Data] --> SPLIT{Patient-Level<br/>Split}
+    SPLIT -->|80%| TRAIN[Train Set]
+    SPLIT -->|10%| VAL[Validation Set]
+    SPLIT -->|10%| TEST[Test Set]
+
+    subgraph Training_Pipeline
+        TRAIN --> AUG[Augmentation<br/>(Flip, Distort, Color)]
+        AUG --> MODEL[ResNet50 Model]
+        VAL -->|Resize/Norm| EVAL_VAL[Validation]
+        MODEL <-->|Loop| EVAL_VAL
+    end
+
+    EVAL_VAL -->|Save Best| BEST[Best Model Checkpoint]
+
+    subgraph Testing_Phase
+        TEST -->|Resize/Norm| FINAL_EVAL[Final Evaluation]
+        BEST --> FINAL_EVAL
+        FINAL_EVAL --> METRICS[Metrics<br/>(Acc, F1, AUC)]
+        FINAL_EVAL --> GRADCAM[Grad-CAM<br/>Visualization]
+    end
+```
+
+## �🚀 Quick Start (PyTorch)
 
 The PyTorch implementation is recommended as it modernizes the codebase, resolves dependency issues, and successfully utilizes the GPU.
 
