@@ -14,7 +14,7 @@ graph LR
     SPLIT -->|10%| TEST[Test Set]
 
     subgraph Training_Pipeline
-        TRAIN --> AUG[Augmentation<br/>(Flip, Distort, Color)]
+        TRAIN --> AUG["Augmentation<br/>(Flip, Distort, Color)"]
         AUG --> MODEL[ResNet50 Model]
         VAL -->|Resize/Norm| EVAL_VAL[Validation]
         MODEL <-->|Loop| EVAL_VAL
@@ -25,8 +25,8 @@ graph LR
     subgraph Testing_Phase
         TEST -->|Resize/Norm| FINAL_EVAL[Final Evaluation]
         BEST --> FINAL_EVAL
-        FINAL_EVAL --> METRICS[Metrics<br/>(Acc, F1, AUC)]
-        FINAL_EVAL --> GRADCAM[Grad-CAM<br/>Visualization]
+        FINAL_EVAL --> METRICS["Metrics<br/>(Acc, F1, AUC)"]
+        FINAL_EVAL --> GRADCAM["Grad-CAM<br/>Visualization"]
     end
 ```
 
