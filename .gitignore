@@ -1,6 +1,7 @@
 data/*.csv
 data/images/*
 logs/
+pytorch_logs/
 
 *checkpoints*
 *.pyc
