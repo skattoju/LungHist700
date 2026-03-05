@@ -30,7 +30,7 @@ graph LR
     end
 ```
 
-## �🚀 Quick Start (PyTorch)
+## 🚀 Quick Start (PyTorch)
 
 The PyTorch implementation is recommended as it modernizes the codebase, resolves dependency issues, and successfully utilizes the GPU.
 
@@ -92,3 +92,14 @@ We also patched the original TensorFlow code to run on modern Python (3.13) envi
 ## 📊 Artifacts & Documentation
 - **[Architecture Diagram](architecture_diagram.md)**: Logic flow of the original codebase.
 - **[PyTorch Migration Evaluation](pytorch_migration_evaluation.md)**: Analysis of why migration was necessary.
+
+## Federated Learning Simulation
+
+We have implemented a Federated Learning (FL) simulation pipeline using PyTorch to study the feasibility of training on distributed patient data without sharing raw images.
+
+For details, running instructions, and methodology, please refer to [Federated Learning Documentation](federated_learning.md).
+
+To run the simulation:
+```bash
+python run_fl_experiment_pytorch.py
+```

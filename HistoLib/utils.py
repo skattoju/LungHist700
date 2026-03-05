@@ -3,7 +3,6 @@ import glob
 import numpy as np
 import pandas as pd
 from sklearn.utils import class_weight
-from tensorflow.keras.utils import plot_model as tf_plot
 from sklearn.model_selection import GroupShuffleSplit
 
 def get_files(base_dir, resolution):
