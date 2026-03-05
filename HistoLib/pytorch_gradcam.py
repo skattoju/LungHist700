@@ -1,3 +1,4 @@
+import random
 import torch
 import numpy as np
 import cv2
@@ -6,7 +7,7 @@ from pytorch_grad_cam import GradCAM
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 from pytorch_grad_cam.utils.image import show_cam_on_image
 
-def generate_samples(model, dataloader, device, num_samples=5, output_path='pytorch_gradcam_samples.png'):
+def generate_samples(model, dataloader, device, num_samples=5, output_path='pytorch_gradcam_samples.png', class_names=None):
     """
     Generates Grad-CAM samples for a few images in the dataloader.
     """
@@ -29,13 +30,25 @@ def generate_samples(model, dataloader, device, num_samples=5, output_path='pyto
     if num_samples == 1:
         axs = [axs]
         
+
+    # Get a batch
     iter_loader = iter(dataloader)
-    
     try:
         images, labels = next(iter_loader)
     except StopIteration:
         print("Dataloader is empty.")
         return
+        
+    # If the dataloader is not shuffled (e.g. valid loader), the first batch might be all one class.
+    # Let us just take all batches up to 5 elements of different random indices if we can,
+    # or just shuffle the first batch.
+    batch_size = images.size(0)
+    indices = list(range(batch_size))
+    random.shuffle(indices)
+    
+    images = images[indices]
+    labels = labels[indices]
+
 
     for i in range(min(num_samples, len(images))):
         input_tensor = images[i].unsqueeze(0).to(device)
@@ -58,7 +71,8 @@ def generate_samples(model, dataloader, device, num_samples=5, output_path='pyto
         visualization = show_cam_on_image(img, grayscale_cam, use_rgb=True)
         
         axs[i].imshow(visualization)
-        axs[i].set_title(f"Class: {label_idx}")
+        display_name = class_names[label_idx] if class_names else str(label_idx)
+        axs[i].set_title(f"Class: {display_name}")
         axs[i].axis('off')
         
     plt.tight_layout()
