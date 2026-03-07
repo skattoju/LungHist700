@@ -165,6 +165,12 @@ def get_mil_dataloaders(resolution='20x', batch_size=3, root_directory='data/ima
         num_patches=20, transform=get_mil_transforms(is_train=False)
     )
 
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+    val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    test_loader  = DataLoader(test_ds,  batch_size=batch_size, shuffle=False, num_workers=num_workers)
+
+    return train_loader, val_loader, test_loader, class_names
+
 def get_mil_grid_dataloaders(resolution='20x', batch_size=1, root_directory='data/images/', dataset_csv='data/data.csv', 
                              reproducible=True, num_workers=2):
     
@@ -207,6 +213,41 @@ def get_frozen_resnet50():
     for p in backbone.parameters():
         p.requires_grad = False
     return backbone
+
+
+class MIL_ResNet50(nn.Module):
+    """End-to-end MIL model: unfrozen ResNet50 backbone + Multi-Head Self-Attention + classifier.
+
+    Each bag is a tensor of shape [B, num_patches, C, H, W].
+    The backbone encodes every patch independently, then attention pools the
+    resulting patch embeddings before the final linear classifier.
+    """
+    def __init__(self, num_classes, embed_dim=2048, num_heads=4):
+        super(MIL_ResNet50, self).__init__()
+        self.embed_dim = embed_dim
+
+        resnet = models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V2)
+        self.backbone = nn.Sequential(*list(resnet.children())[:-1])  # [B, 2048, 1, 1]
+
+        self.attention = nn.MultiheadAttention(
+            embed_dim=embed_dim, num_heads=num_heads, batch_first=True
+        )
+        self.fc = nn.Linear(embed_dim, num_classes)
+
+    def forward(self, bags):
+        # bags: [B, num_patches, C, H, W]
+        B, N, C, H, W = bags.shape
+        patches_flat = bags.view(B * N, C, H, W)
+        features = self.backbone(patches_flat).view(B, N, self.embed_dim)  # [B, N, 2048]
+
+        # Self-attention over patch features
+        attn_output, _ = self.attention(features, features, features)  # [B, N, 2048]
+
+        # Average-pool across patches
+        pooled = attn_output.mean(dim=1)  # [B, 2048]
+        logits = self.fc(pooled)          # [B, num_classes]
+        return logits
+
 
 
 def _extract_grid_patches(image, patch_size=224):
