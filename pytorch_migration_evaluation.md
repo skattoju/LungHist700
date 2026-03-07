@@ -32,7 +32,7 @@ The current codebase uses **TensorFlow (Keras)** with **ResNet50V2**. It relies 
 2.  **Performance**: Keras `fit()` is highly optimized out-of-the-box. A poorly written PyTorch loop might be slower.
 3.  **Weights**: Pre-trained Keras weights might need conversion if exact reproducibility of an existing checkpoint is needed (though ImageNet weights are available in both).
 
-## Migration Plan (Rough Estimate: 1-2 Days)
+## Migration Plan
 1.  **Data Layer**: Wrap `albumentations` pipeline in a `LungHistDataset(Dataset)`. Use `DataLoader`.
 2.  **Model**: Use `torchvision.models.resnet50(weights='IMAGENET...')`. Modify head (FC + Dropout).
 3.  **Training**: Implement a standard training loop (optimizer, loss, backprop) or use **PyTorch Lightning** to keep it concise like Keras.

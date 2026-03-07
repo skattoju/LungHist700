@@ -39,9 +39,8 @@ class MIL_LungHistDataset(Dataset):
         self.num_patches = num_patches
         self.transform = transform
         
-        # We need an initial resize before cropping to match the baseline 0.25 scale 
-        # Baseline resizes to 1200*0.25=300, 1600*0.25=400.
-        self.base_resize = A.Resize(300, 400)
+        # Note: We do NOT downscale the image for MIL. We want to extract 224x224 patches
+        # straight from the original 1200x1600 high-resolution images to retain micro-texture.
 
     def __len__(self):
         return len(self.image_paths)
@@ -50,8 +49,7 @@ class MIL_LungHistDataset(Dataset):
         img_path = self.image_paths[idx]
         image = imageio.imread(img_path)
         
-        # Initial resize
-        image = self.base_resize(image=image)["image"]
+        # No initial resize for MIL - retain true resolution
         
         patches = []
         for _ in range(self.num_patches):
@@ -68,6 +66,44 @@ class MIL_LungHistDataset(Dataset):
         label = torch.tensor(self.labels[idx], dtype=torch.long)
         
         return bag, label
+
+class MIL_GridFeatureDataset(Dataset):
+    def __init__(self, image_paths, labels, class_names, transform=None):
+        self.image_paths = image_paths
+        self.labels = labels
+        self.class_names = class_names
+        self.transform = transform
+        self.patch_size = 224
+        
+    def __len__(self):
+        return len(self.image_paths)
+
+    def __getitem__(self, idx):
+        img_path = self.image_paths[idx]
+        image = imageio.imread(img_path)
+        h, w, _ = image.shape
+        
+        # Calculate a 5x7 grid (35 patches) across the 1200x1600 image.
+        y_steps = np.linspace(0, h - self.patch_size, 5).astype(int)
+        x_steps = np.linspace(0, w - self.patch_size, 7).astype(int)
+        
+        patches = []
+        for y in y_steps:
+            for x in x_steps:
+                crop = image[y:y+self.patch_size, x:x+self.patch_size]
+                if self.transform:
+                    augmented = self.transform(image=crop)
+                    patch = augmented["image"]
+                else:
+                    patch = torch.from_numpy(crop.transpose(2, 0, 1)).float() / 255.0
+                patches.append(patch)
+                
+        bag = torch.stack(patches, dim=0)
+        label = torch.tensor(self.labels[idx], dtype=torch.long)
+        
+        # Optionally return a patient/image id if needed for tracking 
+        file_name = os.path.basename(img_path)
+        return bag, label, file_name
 
 def get_mil_dataloaders(resolution='20x', batch_size=3, root_directory='data/images/', dataset_csv='data/data.csv', 
                         train_split=0.8, val_split=0.1, random_state=17, num_workers=2, image_scale=0.25, reproducible=True):
@@ -106,33 +142,82 @@ def get_mil_dataloaders(resolution='20x', batch_size=3, root_directory='data/ima
         num_patches=20, transform=get_mil_transforms(is_train=False)
     )
 
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
-    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
+def get_mil_grid_dataloaders(resolution='20x', batch_size=1, root_directory='data/images/', dataset_csv='data/data.csv', 
+                             reproducible=True, num_workers=2):
+    
+    df = utils.get_dataframe(dataset_csv, resolution=resolution)
+    class_names, labels = utils.get_classes_labels(root_directory, df['image_path'].values)
+    df['targetclass'] = labels
+
+    if resolution == '20x':
+        train_ids = [2, 3, 4, 5, 7, 8, 12, 14, 15, 16, 17, 18, 20, 21, 23, 24, 25, 26, 28, 29, 30, 33, 36, 37, 38, 39, 41, 42, 45]
+        val_ids = [1, 6, 27, 32, 44]
+        test_ids = [9, 13, 31, 40]
+    else:
+        train_ids = [2, 6, 8, 9, 10, 12, 13, 14, 16, 18, 19, 21, 22, 24, 28, 29, 31, 33, 34, 35, 36, 38, 40, 44]
+        val_ids = [1, 4, 17, 26, 30, 37, 45]
+        test_ids = [11, 15, 20, 25, 32, 43]
+
+    df_train = df[df.patient_id.isin(train_ids)]
+    df_val = df[df.patient_id.isin(val_ids)]
+    df_test = df[df.patient_id.isin(test_ids)]
+
+    # Use inference transforms for all (since we are just extracting features from the raw image)
+    transform = get_mil_transforms(is_train=False)
+
+    train_ds = MIL_GridFeatureDataset(df_train['image_path'].values, df_train['targetclass'].values, class_names, transform=transform)
+    val_ds = MIL_GridFeatureDataset(df_val['image_path'].values, df_val['targetclass'].values, class_names, transform=transform)
+    test_ds = MIL_GridFeatureDataset(df_test['image_path'].values, df_test['targetclass'].values, class_names, transform=transform)
+
+    # Batch size 1 because each item is a bag of 35 patches.
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
     return train_loader, val_loader, test_loader, class_names
 
-class MIL_ResNet50(nn.Module):
-    def __init__(self, num_classes, num_heads=4, freeze_base=False):
-        super(MIL_ResNet50, self).__init__()
-        # Backbone (ResNet50 without fc)
-        resnet = models.resnet50(weights=ResNet50_Weights.DEFAULT)
-        if freeze_base:
-            for param in resnet.parameters():
-                param.requires_grad = False
-                
-        # We need the pooled output (2048-d) per patch.
-        # list(resnet.children())[:-1] gets up to AdaptiveAvgPool2d, outputting (B, 2048, 1, 1) per patch
-        self.backbone = nn.Sequential(*list(resnet.children())[:-1])
+class MIL_EmbeddingDataset(Dataset):
+    def __init__(self, embedding_dir, labels_dict):
+        self.embedding_dir = embedding_dir
+        self.files = os.listdir(embedding_dir)
+        self.labels_dict = labels_dict
         
-        self.embed_dim = resnet.fc.in_features # 2048
+    def __len__(self):
+        return len(self.files)
+
+    def __getitem__(self, idx):
+        file_name = self.files[idx]
+        file_path = os.path.join(self.embedding_dir, file_name)
         
-        # Attention Layer
-        # The paper: "An attention layer with four heads was then applied"
+        # Load precomputed embedding
+        bag_embedding = torch.load(file_path, weights_only=True)
+        
+        # The original image filename to fetch the label
+        orig_img_name = file_name.replace('.pt', '')
+        label = torch.tensor(self.labels_dict[orig_img_name], dtype=torch.long)
+        
+        return bag_embedding, label
+
+class MIL_AttentionOnly(nn.Module):
+    def __init__(self, num_classes, embed_dim=2048, num_heads=4):
+        super(MIL_AttentionOnly, self).__init__()
+        
+        self.embed_dim = embed_dim
         self.attention = nn.MultiheadAttention(embed_dim=self.embed_dim, num_heads=num_heads, batch_first=True)
-        
-        # Classification Head
         self.fc = nn.Linear(self.embed_dim, num_classes)
+
+    def forward(self, features):
+        # features shape: [B, num_patches, 2048]
+        # Multi-Head Attention (Self-attention)
+        attn_output, _ = self.attention(features, features, features) # [B, num_patches, 2048]
+        
+        # Average pooling over patches to obtain a single embedding per bag
+        pooled_output = torch.mean(attn_output, dim=1) # [B, 2048]
+        
+        # Classification
+        logits = self.fc(pooled_output) # [B, num_classes]
+        
+        return logits
 
     def forward(self, bags):
         # bags shape: [B, num_patches, C, H, W]
