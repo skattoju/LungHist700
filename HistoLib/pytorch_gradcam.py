@@ -54,17 +54,27 @@ def generate_samples(model, dataloader, device, num_samples=5, output_path='pyto
     if num_samples == 1:
         axs = [axs]
 
-    # Get a batch
-    iter_loader = iter(dataloader)
-    try:
-        images, labels = next(iter_loader)
-    except StopIteration:
+    # Collect a pool of images from multiple batches to ensure class variety.
+    # val_loader is often unshuffled, so a single batch might show only one class.
+    pool_images = []
+    pool_labels = []
+    
+    for imgs, lbls in dataloader:
+        pool_images.append(imgs)
+        pool_labels.append(lbls)
+        if sum(len(b) for b in pool_images) >= num_samples * 5:
+            # Collect at least enough to have a good chance of mixing
+            break
+            
+    if not pool_images:
         print("Dataloader is empty.")
         return
         
-    # Shuffle within the batch to get varied classes (val_loader is not shuffled)
-    batch_size = images.size(0)
-    indices = list(range(batch_size))
+    images = torch.cat(pool_images, dim=0)
+    labels = torch.cat(pool_labels, dim=0)
+    
+    # Shuffle the entire pool to get varied classes
+    indices = list(range(images.size(0)))
     random.shuffle(indices)
     images = images[indices]
     labels = labels[indices]
