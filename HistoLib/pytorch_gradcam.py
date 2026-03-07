@@ -55,7 +55,10 @@ def generate_samples(model, dataloader, device, num_samples=5, output_path='pyto
         axs = [axs]
 
     # To ensure varied classes, we prioritize collecting one image per unique class.
-    # We then pad with any extra images until we have exactly num_samples.
+    # We scan the dataloader until we've found as many unique classes as possible
+    # (up to num_samples or len(class_names)).
+    target_num_classes = min(len(class_names) if class_names else num_samples, num_samples)
+    
     unique_images = {}
     extra_images = []
     extra_labels = []
@@ -66,16 +69,19 @@ def generate_samples(model, dataloader, device, num_samples=5, output_path='pyto
             if lbl_idx not in unique_images:
                 unique_images[lbl_idx] = (imgs[i].unsqueeze(0), lbls[i].unsqueeze(0))
             else:
-                extra_images.append(imgs[i].unsqueeze(0))
-                extra_labels.append(lbls[i].unsqueeze(0))
+                # Keep some extras just in case we need to pad later
+                if len(extra_images) < num_samples:
+                    extra_images.append(imgs[i].unsqueeze(0))
+                    extra_labels.append(lbls[i].unsqueeze(0))
                 
-        if len(unique_images) + len(extra_images) >= num_samples:
+        # Only stop when we've found all the unique classes we need
+        if len(unique_images) >= target_num_classes:
             break
             
     pool_images = [img for img, _ in unique_images.values()]
     pool_labels = [lbl for _, lbl in unique_images.values()]
     
-    # Pad to reach exactly num_samples
+    # Pad to reach exactly num_samples if we didn't find enough unique classes
     for i in range(num_samples - len(pool_images)):
         if extra_images:
             pool_images.append(extra_images.pop(0))
