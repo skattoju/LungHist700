@@ -1,5 +1,7 @@
+import os
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import imageio.v3 as imageio
@@ -30,6 +32,27 @@ def get_mil_transforms(target_size=224, is_train=True):
             A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
             ToTensorV2(),
         ])
+
+def get_mil_grid_augment_transforms():
+    """Augmentation for pre-cropped 224x224 grid patches (no RandomCrop needed)."""
+    return A.Compose([
+        A.HorizontalFlip(p=0.5),
+        A.VerticalFlip(p=0.5),
+        A.GridDistortion(p=0.2),
+        A.RandomGamma(gamma_limit=(80, 120), p=0.5),
+        A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.2),
+        A.HueSaturationValue(hue_shift_limit=5, sat_shift_limit=20, val_shift_limit=10, p=0.2),
+        A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+        ToTensorV2(),
+    ])
+
+def get_mil_grid_inference_transforms():
+    """Normalize-only transform for pre-cropped 224x224 grid patches."""
+    return A.Compose([
+        A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+        ToTensorV2(),
+    ])
+
 
 class MIL_LungHistDataset(Dataset):
     def __init__(self, image_paths, labels, class_names, num_patches=20, transform=None):
@@ -176,27 +199,144 @@ def get_mil_grid_dataloaders(resolution='20x', batch_size=1, root_directory='dat
 
     return train_loader, val_loader, test_loader, class_names
 
+def get_frozen_resnet50():
+    """Return a frozen ResNet50 feature extractor (no FC, no grad)."""
+    resnet = models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V2)
+    backbone = nn.Sequential(*list(resnet.children())[:-1])  # removes final FC -> output [B, 2048, 1, 1]
+    backbone.eval()
+    for p in backbone.parameters():
+        p.requires_grad = False
+    return backbone
+
+
+def _extract_grid_patches(image, patch_size=224):
+    """Extract a 5x7 grid of patches from a single image array."""
+    h, w = image.shape[:2]
+    y_steps = np.linspace(0, h - patch_size, 5).astype(int)
+    x_steps = np.linspace(0, w - patch_size, 7).astype(int)
+    patches = []
+    for y in y_steps:
+        for x in x_steps:
+            patches.append(image[y:y + patch_size, x:x + patch_size])
+    return patches
+
+
+def extract_and_save_grid_embeddings(image_paths, labels, backbone, save_dir, device, transform=None, num_augmentations=0):
+    """Extract embeddings for every image using a frozen backbone and save to disk.
+
+    Args:
+        image_paths: array of image file paths
+        labels: array of integer labels (parallel to image_paths)
+        backbone: frozen ResNet50 feature extractor
+        save_dir: directory to write .pt files
+        device: torch device
+        transform: albumentations transform applied to each 224x224 patch
+        num_augmentations: if >0, produce this many augmented copies per image
+                           (saved as <name>_aug0.pt … <name>_augN.pt) in addition
+                           to a single non-augmented version (<name>.pt).
+    """
+    os.makedirs(save_dir, exist_ok=True)
+    backbone = backbone.to(device)
+
+    inference_tf = get_mil_grid_inference_transforms()
+    augment_tf = transform if transform is not None else get_mil_grid_augment_transforms()
+
+    labels_dict = {}
+
+    for i, img_path in enumerate(image_paths):
+        image = imageio.imread(img_path)
+        file_stem = os.path.splitext(os.path.basename(img_path))[0]
+        labels_dict[file_stem] = int(labels[i])
+        raw_patches = _extract_grid_patches(image)
+
+        # --- non-augmented version (always saved) ---
+        out_path = os.path.join(save_dir, f"{file_stem}.pt")
+        if not os.path.exists(out_path):
+            tensors = [inference_tf(image=p)["image"] for p in raw_patches]
+            bag = torch.stack(tensors).to(device)  # [35, 3, 224, 224]
+            with torch.no_grad():
+                feats = backbone(bag).squeeze(-1).squeeze(-1)  # [35, 2048]
+            torch.save(feats.cpu(), out_path)
+
+        # --- augmented versions ---
+        for aug_idx in range(num_augmentations):
+            aug_path = os.path.join(save_dir, f"{file_stem}_aug{aug_idx}.pt")
+            if not os.path.exists(aug_path):
+                tensors = [augment_tf(image=p)["image"] for p in raw_patches]
+                bag = torch.stack(tensors).to(device)
+                with torch.no_grad():
+                    feats = backbone(bag).squeeze(-1).squeeze(-1)
+                torch.save(feats.cpu(), aug_path)
+
+    return labels_dict
+
+
 class MIL_EmbeddingDataset(Dataset):
-    def __init__(self, embedding_dir, labels_dict):
+    """Loads precomputed [num_patches, 2048] embeddings from disk.
+
+    When num_augmentations > 0 the dataset randomly selects one of the
+    augmented variants for each sample on every access (training-time
+    augmentation via precomputed copies).
+    """
+    def __init__(self, embedding_dir, labels_dict, num_augmentations=0):
         self.embedding_dir = embedding_dir
-        self.files = os.listdir(embedding_dir)
         self.labels_dict = labels_dict
-        
+        self.num_augmentations = num_augmentations
+
+        # Build the list of *base* file stems (exclude _aug* duplicates)
+        self.stems = sorted([
+            os.path.splitext(f)[0]
+            for f in os.listdir(embedding_dir)
+            if f.endswith('.pt') and '_aug' not in f
+        ])
+
     def __len__(self):
-        return len(self.files)
+        return len(self.stems)
 
     def __getitem__(self, idx):
-        file_name = self.files[idx]
+        stem = self.stems[idx]
+
+        if self.num_augmentations > 0:
+            aug_idx = np.random.randint(0, self.num_augmentations)
+            file_name = f"{stem}_aug{aug_idx}.pt"
+        else:
+            file_name = f"{stem}.pt"
+
         file_path = os.path.join(self.embedding_dir, file_name)
-        
-        # Load precomputed embedding
         bag_embedding = torch.load(file_path, weights_only=True)
-        
-        # The original image filename to fetch the label
-        orig_img_name = file_name.replace('.pt', '')
-        label = torch.tensor(self.labels_dict[orig_img_name], dtype=torch.long)
-        
+        label = torch.tensor(self.labels_dict[stem], dtype=torch.long)
         return bag_embedding, label
+
+
+def get_embedding_dataloaders(embedding_base_dir, train_labels, val_labels, test_labels,
+                              num_augmentations=5, batch_size=16, num_workers=2):
+    """Create DataLoaders for precomputed embedding directories.
+
+    Args:
+        embedding_base_dir: parent directory containing train/, val/, test/ subdirs
+        train_labels / val_labels / test_labels: dict mapping file stem -> int label
+        num_augmentations: number of augmented copies available for training
+        batch_size: batch size for all loaders
+        num_workers: dataloader workers
+    """
+    train_ds = MIL_EmbeddingDataset(
+        os.path.join(embedding_base_dir, 'train'), train_labels,
+        num_augmentations=num_augmentations
+    )
+    val_ds = MIL_EmbeddingDataset(
+        os.path.join(embedding_base_dir, 'val'), val_labels,
+        num_augmentations=0
+    )
+    test_ds = MIL_EmbeddingDataset(
+        os.path.join(embedding_base_dir, 'test'), test_labels,
+        num_augmentations=0
+    )
+
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+
+    return train_loader, val_loader, test_loader
 
 class MIL_AttentionOnly(nn.Module):
     def __init__(self, num_classes, embed_dim=2048, num_heads=4):
@@ -219,27 +359,41 @@ class MIL_AttentionOnly(nn.Module):
         
         return logits
 
-    def forward(self, bags):
-        # bags shape: [B, num_patches, C, H, W]
-        B, num_patches, C, H, W = bags.size()
-        
-        # Flatten batch and patches to put through standard ResNet50
-        bags_flat = bags.view(B * num_patches, C, H, W)
-        
-        # Extract features
-        features = self.backbone(bags_flat) # [B*20, 2048, 1, 1]
-        features = features.view(B * num_patches, -1) # [B*20, 2048]
-        
-        # Reshape for Attention
-        features = features.view(B, num_patches, self.embed_dim) # [B, 20, 2048]
-        
-        # Multi-Head Attention (Self-attention)
-        attn_output, _ = self.attention(features, features, features) # [B, 20, 2048]
-        
-        # Average pooling over the 20 patches to obtain a single embedding per bag
-        pooled_output = torch.mean(attn_output, dim=1) # [B, 2048]
-        
-        # Classification
-        logits = self.fc(pooled_output) # [B, num_classes]
-        
+
+class GatedAttentionMIL(nn.Module):
+    """Gated Attention MIL (Ilse et al. 2018).
+
+    Computes per-instance attention weights via element-wise gating:
+        a_k = softmax( W^T (tanh(V h_k) * sigmoid(U h_k)) )
+    then aggregates:  z = sum_k a_k * h_k  ->  classifier(z)
+    """
+    def __init__(self, num_classes, embed_dim=2048, hidden_dim=256, dropout=0.25):
+        super(GatedAttentionMIL, self).__init__()
+        self.embed_dim = embed_dim
+
+        self.attention_V = nn.Sequential(
+            nn.Linear(embed_dim, hidden_dim),
+            nn.Tanh(),
+        )
+        self.attention_U = nn.Sequential(
+            nn.Linear(embed_dim, hidden_dim),
+            nn.Sigmoid(),
+        )
+        self.attention_W = nn.Linear(hidden_dim, 1)
+
+        self.classifier = nn.Sequential(
+            nn.Dropout(p=dropout),
+            nn.Linear(embed_dim, num_classes),
+        )
+
+    def forward(self, features):
+        # features: [B, N, embed_dim]
+        V = self.attention_V(features)   # [B, N, hidden_dim]
+        U = self.attention_U(features)   # [B, N, hidden_dim]
+        scores = self.attention_W(V * U) # [B, N, 1]
+        attn_weights = F.softmax(scores, dim=1)  # [B, N, 1]
+
+        # Weighted sum of instance embeddings
+        z = torch.sum(attn_weights * features, dim=1)  # [B, embed_dim]
+        logits = self.classifier(z)  # [B, num_classes]
         return logits
