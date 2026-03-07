@@ -54,16 +54,22 @@ def generate_samples(model, dataloader, device, num_samples=5, output_path='pyto
     if num_samples == 1:
         axs = [axs]
 
-    # Collect a pool of images from multiple batches to ensure class variety.
-    # val_loader is often unshuffled, so a single batch might show only one class.
+    # To ensure varied classes, we collect one image per unique class
+    # up to num_samples, by scanning the unshuffled loader.
+    found_classes = set()
     pool_images = []
     pool_labels = []
     
     for imgs, lbls in dataloader:
-        pool_images.append(imgs)
-        pool_labels.append(lbls)
-        if sum(len(b) for b in pool_images) >= num_samples * 5:
-            # Collect at least enough to have a good chance of mixing
+        for i in range(len(imgs)):
+            lbl_idx = lbls[i].item()
+            if lbl_idx not in found_classes:
+                found_classes.add(lbl_idx)
+                pool_images.append(imgs[i].unsqueeze(0))
+                pool_labels.append(lbls[i].unsqueeze(0))
+            if len(found_classes) >= num_samples:
+                break
+        if len(found_classes) >= num_samples:
             break
             
     if not pool_images:
@@ -72,12 +78,6 @@ def generate_samples(model, dataloader, device, num_samples=5, output_path='pyto
         
     images = torch.cat(pool_images, dim=0)
     labels = torch.cat(pool_labels, dim=0)
-    
-    # Shuffle the entire pool to get varied classes
-    indices = list(range(images.size(0)))
-    random.shuffle(indices)
-    images = images[indices]
-    labels = labels[indices]
 
     for i in range(min(num_samples, len(images))):
         label_idx = labels[i].item()
