@@ -54,23 +54,32 @@ def generate_samples(model, dataloader, device, num_samples=5, output_path='pyto
     if num_samples == 1:
         axs = [axs]
 
-    # To ensure varied classes, we collect one image per unique class
-    # up to num_samples, by scanning the unshuffled loader.
-    found_classes = set()
-    pool_images = []
-    pool_labels = []
+    # To ensure varied classes, we prioritize collecting one image per unique class.
+    # We then pad with any extra images until we have exactly num_samples.
+    unique_images = {}
+    extra_images = []
+    extra_labels = []
     
     for imgs, lbls in dataloader:
         for i in range(len(imgs)):
             lbl_idx = lbls[i].item()
-            if lbl_idx not in found_classes:
-                found_classes.add(lbl_idx)
-                pool_images.append(imgs[i].unsqueeze(0))
-                pool_labels.append(lbls[i].unsqueeze(0))
-            if len(found_classes) >= num_samples:
-                break
-        if len(found_classes) >= num_samples:
+            if lbl_idx not in unique_images:
+                unique_images[lbl_idx] = (imgs[i].unsqueeze(0), lbls[i].unsqueeze(0))
+            else:
+                extra_images.append(imgs[i].unsqueeze(0))
+                extra_labels.append(lbls[i].unsqueeze(0))
+                
+        if len(unique_images) + len(extra_images) >= num_samples:
             break
+            
+    pool_images = [img for img, _ in unique_images.values()]
+    pool_labels = [lbl for _, lbl in unique_images.values()]
+    
+    # Pad to reach exactly num_samples
+    for i in range(num_samples - len(pool_images)):
+        if extra_images:
+            pool_images.append(extra_images.pop(0))
+            pool_labels.append(extra_labels.pop(0))
             
     if not pool_images:
         print("Dataloader is empty.")
