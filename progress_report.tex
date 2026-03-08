@@ -15,219 +15,145 @@
 \Crefname{table}{Table}{Tables}
 \crefname{table}{Tab.}{Tabs.}
 
-% -------- Title / Author --------
-\title{COMP 499 Progress Report: Lung Histopathology Classification on LungHist700}
+\title{COMP 499 Progress Report:\\Lung Histopathology Classification on LungHist700}
 
 \begin{document}
 \maketitle
 
 % =========================
-\section{Introduction and Problem Statement}
+\section{Introduction}
 \label{sec:intro}
 
-Lung cancer histopathology classification is a clinically relevant computer vision problem: automated tissue image interpretation can support pathologists by accelerating routine screening and improving diagnostic consistency. Our project focuses on patch-level and bag-level classification using LungHist700~\cite{lunghist700} at 20x magnification in the three-class setting: adenocarcinoma (ACA), normal (NOR), and squamous cell carcinoma (SCC).
+Lung cancer histopathology classification is a clinically relevant computer vision problem where automated tissue interpretation can accelerate screening and improve diagnostic consistency. Our project evaluates four approaches on LungHist700~\cite{lunghist700paper} at 20$\times$ magnification in a three-class setting: adenocarcinoma (ACA), normal (NOR), and squamous cell carcinoma (SCC).
 
-Since the proposal, our work has moved beyond planning into fully reproducible experimentation. We have established working training and evaluation pipelines and produced baseline CNN and multiple-instance learning (MIL) results that closely replicate the published benchmarks. Specifically, we aim to (i) reproduce a ResNet50-based patch-level CNN baseline, (ii) reproduce an end-to-end MIL pipeline and compare it against the CNN, (iii) implement an improved frozen-backbone MIL with multi-head self-attention and gated-attention aggregators, and (iv) report performance using accuracy, macro-F1, and ROC-AUC complemented by confusion matrices and learning curves.
+We aim to (i) reproduce the ResNet50 patch-level CNN baseline, (ii) reproduce an end-to-end MIL pipeline, (iii) implement two frozen-backbone MIL aggregators (multi-head self-attention and gated attention), and (iv) quantify and explain the gap between supervised patch-level and weakly supervised bag-level approaches.
 
 % =========================
-\section{Proposed Methodologies}
+\section{Methodology}
 \label{sec:method}
 
-\subsection{Dataset and Task Setup}
-We use LungHist700, which comprises 691 high-resolution (1200$\times$1600 px) histopathological lung images at 20x and 40x magnification covering seven fine-grained sub-classes grouped into three superclasses. We perform patient-wise splitting to avoid leakage: patient IDs are partitioned into train / val / test with no overlap. Class-balanced loss weighting is applied to mitigate the moderate class imbalance.
+\paragraph{Dataset.}
+LungHist700 comprises 691 high-resolution (1200$\times$1600 px) histopathological lung images at 20$\times$ and 40$\times$ covering seven sub-classes grouped into three superclasses. Patient-wise splitting (no ID overlap across train/val/test) prevents leakage, and class-weighted cross-entropy addresses class imbalance.
 
-\subsection{Baseline CNN (ResNet50 Transfer Learning)}
-A ResNet50 backbone pretrained on ImageNet is fine-tuned for 3-way classification using weighted cross-entropy loss. Each 1200$\times$1600 image is resized to 300$\times$400 and then randomly cropped to 224$\times$224 patches during training. We monitor accuracy, macro-F1, and ROC-AUC on the validation and test sets, and track training / validation learning curves to identify overfitting.
+\paragraph{CNN Baseline.}
+A ResNet50 backbone pretrained on ImageNet is fine-tuned for 3-way classification. Images are downscaled to 300$\times$400 and randomly cropped to 224$\times$224 patches during training.
 
-\subsection{End-to-End MIL (ResNet50 + Multi-Head Self-Attention)}
-The end-to-end MIL model treats each slide as a \emph{bag} of 20 randomly sampled 224$\times$224 patches extracted from the full-resolution 1200$\times$1600 image. A shared ResNet50 backbone (jointly trained with the rest of the network) encodes each patch into a 2048-dim embedding; a 4-head self-attention module then aggregates the patch embeddings, and a linear classifier predicts the bag label. This follows the bag construction described in the original LungHist700 paper~\cite{lunghist700paper}.
+\paragraph{End-to-End MIL.}
+Each slide is treated as a \emph{bag} of 20 randomly sampled 224$\times$224 patches from the full-resolution image (matching the paper's bag construction~\cite{lunghist700paper}). A shared ResNet50 backbone encodes each patch into a 2048-dim embedding; a 4-head self-attention module aggregates patch embeddings before a linear classifier. The entire network is trained jointly under bag-level supervision.
 
-\subsection{Frozen-Backbone MIL (Offline Embeddings + Lightweight Heads)}
-To address the instability of end-to-end MIL on a small dataset, we freeze the ImageNet-pretrained ResNet50 and pre-compute 2048-dim embeddings for 35 deterministic grid patches (5$\times$7 grid) per image. Two lightweight aggregation heads are then trained on these fixed embeddings:
-\begin{itemize}
-    \item \textbf{Multi-Head Self-Attention MIL:} 4-head self-attention over the 35 patch embeddings, followed by mean-pooling and a linear classifier.
-    \item \textbf{Gated Attention MIL~\cite{ilse2018}:} per-patch importance scores via sigmoid-tanh gating (Ilse \etal, 2018), followed by a weighted-sum aggregation and linear classifier.
-\end{itemize}
+\paragraph{Frozen-Backbone MIL.}
+To address end-to-end training instability, we freeze the ImageNet ResNet50 and pre-compute embeddings for 35 deterministic grid patches (5$\times$7) per image. Two lightweight heads are trained on these fixed embeddings: (a)~\textbf{Multi-Head Self-Attention} — 4-head self-attention with mean-pooling; (b)~\textbf{Gated Attention}~\cite{ilse2018} — per-patch sigmoid-tanh importance scores with weighted-sum aggregation.
 
-\subsection{Evaluation Metrics}
-We report Accuracy, Macro Precision, Macro Recall, Macro-F1, and ROC-AUC on the held-out test set. Confusion matrices identify which class pairs are most frequently confused, and learning curves (loss, accuracy, AUC per epoch) assess convergence and generalization.
+\paragraph{Evaluation.}
+We report Accuracy, Macro-F1, and ROC-AUC on the held-out test set, with per-class breakdowns via normalized confusion matrices and epoch-wise learning curves.
 
 % =========================
-\section{Experimental Results}
+\section{Results}
 \label{sec:results}
 
-All experiments use the 20x resolution images, patient-wise splits, and ImageNet pre-training for ResNet50 unless otherwise noted.
-
-\subsection{CNN Baseline}
-
-\Cref{tab:cnn} shows test-set performance of the fine-tuned ResNet50 patch-level classifier. Training converges by approximately epoch 30 and is stabilized by early stopping. The model achieves \textbf{91.67\% accuracy} and \textbf{ROC-AUC 0.9945}, closely reproducing the paper's reported $\approx$90\% / 98\% benchmark~\cite{lunghist700paper}.
+\Cref{tab:all_results} presents all test-set results alongside published LungHist700 benchmarks at 20$\times$.
 
 \begin{table}[h]
 \centering
-\caption{CNN ResNet50 baseline — test-set results.}
-\label{tab:cnn}
-\begin{tabular}{lc}
-\toprule
-Metric & Value \\
-\midrule
-Accuracy            & 0.9167 \\
-Macro F1            & 0.9151 \\
-ROC-AUC             & 0.9945 \\
-Macro Precision     & 0.9151 \\
-Macro Recall        & 0.9151 \\
-Test Loss           & 0.2823 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-The confusion matrix (\cref{fig:cnn_cm}) shows near-perfect NOR classification and a small number of ACA/SCC confusions, consistent with the overlapping glandular morphology between certain adenocarcinoma sub-types and squamous patterns. The training curves (\cref{fig:cnn_curves}) confirm rapid convergence without severe overfitting.
-
-\subsection{End-to-End MIL Baseline}
-
-The end-to-end MIL model (\cref{tab:mil_e2e}) bags 20 random 224$\times$224 patches per image and trains the full ResNet50 backbone jointly with a 4-head self-attention module under weak (bag-level) supervision. Test accuracy drops to \textbf{70.83\%} versus the CNN baseline, reproducing the CNN$>$MIL ordering reported in the paper (paper: $\approx$90\% CNN vs.\ $\approx$81\% MIL). Our end-to-end MIL accuracy is $\approx$10 points below the paper's published MIL figure; however, our ROC-AUC (0.9131) \emph{exceeds} the paper's reported AUC of 0.89, indicating that the model learns a well-calibrated class ranking even when individual hard predictions are noisier.
-
-\begin{table}[h]
-\centering
-\caption{End-to-end MIL (ResNet50 + self-attention) — test-set results.}
-\label{tab:mil_e2e}
-\begin{tabular}{lcc}
-\toprule
-Metric & Ours & Paper~\cite{lunghist700paper} \\
-\midrule
-Accuracy        & 0.7083 & $\approx$0.81 \\
-Macro F1        & 0.7009 & --- \\
-ROC-AUC         & 0.9131 & $\approx$0.89 \\
-Macro Precision & 0.7713 & --- \\
-Macro Recall    & 0.7033 & --- \\
-Test Loss       & 0.8207 & --- \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-The accuracy gap relative to the paper can be attributed to: (i) the cold-start problem — the attention module must learn which patches are discriminative while the backbone is still changing; (ii) gradient noise from propagating through $\approx$25M ResNet50 parameters using a single bag-level label; and (iii) small effective training set ($\approx$560 bags with 20 stochastic patches each). The AUROC gap in the other direction suggests our model is well-calibrated for ranking tasks.
-
-\subsection{Frozen-Backbone MIL (Offline Embeddings)}
-
-\Cref{tab:frozen_mil} compares the two lightweight aggregators trained on pre-computed ResNet50 embeddings. By decoupling feature extraction from aggregation, both models benefit from stable, high-quality features and train in a fraction of the wall-clock time.
-
-\begin{table}[h]
-\centering
-\caption{Frozen ResNet50 MIL — test-set results.}
-\label{tab:frozen_mil}
-\begin{tabular}{lcc}
-\toprule
-Metric & Self-Attention & Gated Attention \\
-\midrule
-Accuracy            & 0.6875 & 0.7083 \\
-Macro F1            & 0.6470 & 0.7004 \\
-ROC-AUC             & 0.8612 & 0.8663 \\
-Macro Precision     & 0.6859 & 0.7518 \\
-Macro Recall        & 0.6427 & 0.6877 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\noindent Gated attention outperforms self-attention on every metric, consistent with known results showing that simpler aggregators generalise better in the small-data MIL regime. SCC recall is the weakest class across both models (36\% and 55\% respectively), suggesting that ImageNet ResNet50 features provide insufficient discriminability for squamous-cell morphology.
-
-\subsection{Comparison with Published Benchmarks}
-
-\Cref{tab:comparison} summarises all models alongside the published LungHist700 paper results at 20x.
-
-\begin{table}[h]
-\centering
-\caption{Summary comparison — our results vs.\ published paper at 20x.}
-\label{tab:comparison}
+\caption{All models vs.\@ published paper benchmarks (20$\times$, 3-class).}
+\label{tab:all_results}
+\setlength{\tabcolsep}{4pt}
 \begin{tabular}{lccc}
 \toprule
-Model & Accuracy & ROC-AUC & Macro F1 \\
+Model & Acc & AUROC & Macro F1 \\
 \midrule
-Paper CNN~\cite{lunghist700paper}      & 0.90 & 0.98 & --- \\
-\textbf{Ours — CNN ResNet50}           & \textbf{0.9167} & \textbf{0.9945} & \textbf{0.9151} \\
+Paper CNN~\cite{lunghist700paper}         & 0.90 & 0.98 & --- \\
+\textbf{Ours — CNN ResNet50}              & \textbf{0.917} & \textbf{0.995} & \textbf{0.915} \\
 \midrule
-Paper MIL~\cite{lunghist700paper}      & 0.81 & 0.89 & --- \\
-Ours — End-to-End MIL                  & 0.7083 & 0.9131 & 0.7009 \\
-Ours — Frozen (Gated Attn)             & 0.7083 & 0.8663 & 0.7004 \\
-Ours — Frozen (Self-Attn)              & 0.6875 & 0.8612 & 0.6470 \\
+Paper MIL~\cite{lunghist700paper}         & 0.81 & 0.89 & --- \\
+Ours — End-to-End MIL                     & 0.708 & 0.913 & 0.701 \\
+Ours — Frozen MIL (Gated Attn)            & 0.708 & 0.866 & 0.700 \\
+Ours — Frozen MIL (Self-Attn)             & 0.688 & 0.861 & 0.647 \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+\paragraph{CNN Baseline.}
+The fine-tuned ResNet50 achieves \textbf{91.7\% accuracy and AUROC 0.995}, matching the paper's ~90\%/98\% benchmark. NOR classification is near-perfect; the dominant error is ACA/SCC confusion, consistent with overlapping morphological patterns. Training converges in $\sim$30 epochs with no severe overfitting.
+
+\paragraph{End-to-End MIL.}
+The jointly trained backbone + self-attention model reaches \textbf{70.8\% accuracy}. Our accuracy is $\approx$10 points below the paper's MIL figure; however, our \textbf{AUROC (0.913) exceeds the paper's (0.89)}, indicating well-calibrated class rankings despite noisy hard predictions. The gap is attributable to: (i)~the cold-start problem (attention and backbone updated simultaneously); (ii)~gradient noise from 25M parameters supervised by a single bag label; and (iii)~a small training set ($\approx$560 bags).
+
+\paragraph{Frozen-Backbone MIL.}
+Both frozen aggregators match or approach the end-to-end MIL accuracy while training orders of magnitude faster (no backbone gradients).
+
+\textbf{Gated attention} (Acc 70.8\%, F1 0.700) outperforms self-attention on every metric. Its per-patch sigmoid-tanh gating is better regularised than multi-head self-attention given only $\sim$560 training bags. NOR precision reaches 93\% and ACA recall 83\%. SCC recall (55\%) is the weakest link.
+
+\textbf{Multi-head self-attention} (Acc 68.75\%, F1 0.647) underperforms due to overfitting: its higher parameter count disadvantages it in the small-data regime, and SCC recall collapses to 36\%.
+
+\cref{fig:per_class} shows full per-class breakdowns.
+
+\begin{figure}[h]
+\centering
+\begin{tabular}{cc}
+  \includegraphics[width=0.22\textwidth]{self_attention_mil_confusion_matrix.png} &
+  \includegraphics[width=0.22\textwidth]{gated_attention_mil_confusion_matrix.png}
+\end{tabular}
+\caption{Normalized confusion matrices (per-class recall) for frozen MIL models — Self-Attention (left) and Gated Attention (right).}
+\label{fig:per_class}
+\end{figure}
 
 % =========================
 \section{Discussion}
 \label{sec:discussion}
 
-\paragraph{CNN vs.\ MIL.}
-Our results confirm the CNN $>$ MIL accuracy ordering reported in the paper. The patch-level CNN benefits from dense, per-patch supervision: every forward pass produces a labelled gradient update, leading to fast convergence. By contrast, the MIL model receives only one bag-level label per slide, creating a much noisier gradient signal and a chicken-and-egg optimisation problem between the backbone features and the attention weights.
+\paragraph{CNN $>$ MIL, as expected.}
+Our results confirm the same ordering reported in Marino \etal: the patch-level CNN outperforms all MIL variants by $\sim$20 points in accuracy. Patch-level labels provide a dense supervision signal — every forward pass is labelled — while bag-level labels create a much noisier gradient. This advantage disappears in practice when patch-level annotations are unavailable, motivating MIL.
 
-\paragraph{Why our MIL accuracy is lower than the paper.}
-The $\approx$10-point accuracy gap relative to the paper's MIL is primarily attributable to training instability in the end-to-end regime and is consistent with the known sensitivity of joint backbone + attention training to learning rate schedules and early stopping thresholds. Notably, our ROC-AUC (0.9131) \emph{exceeds} the paper's value (0.89), confirming that the model's probabilistic outputs are well-ordered even when its hard-classification boundary is noisier. This suggests that our model could be competitive in ranking or risk-stratification tasks.
+\paragraph{End-to-end MIL AUROC gap.}
+Despite lower accuracy, the end-to-end MIL achieves the highest AUROC among MIL variants (0.913 vs.\@ 0.866 gated). Joint backbone training, though unstable, adapts the feature extractor to histopathology, improving the ranking of class probabilities even when hard boundaries shift. This makes end-to-end MIL more suitable for risk-stratification tasks.
 
-\paragraph{Frozen-backbone MIL results.}
-Both frozen aggregators match or approach the end-to-end MIL in accuracy (gated: 70.8\%, self-attn: 68.75\%) while training far faster. Gated attention outperforms self-attention on every metric — its independent per-patch sigmoid-tanh scoring is better regularised than multi-head self-attention given only $\sim$560 training bags. SCC recall is the critical failure (36--55\%), indicating that ImageNet ResNet50 features are insufficiently specialised for squamous-cell morphology. Replacing the frozen backbone with a histopathology-specific encoder (UNI, CONCH, PLIP) is the most promising next step.
+\paragraph{Frozen backbone — gated $>$ self-attention.}
+The ImageNet domain gap limits both frozen models' AUROC ($\sim$0.86 vs.\@ 0.913 end-to-end). Within the frozen paradigm, gated attention's inductive bias (sparse, independent patch suppression) outperforms self-attention's relational modelling on this small dataset. SCC is the hardest class across all MIL settings, indicating that ImageNet ResNet50 features poorly encode squamous-cell morphology.
 
-\paragraph{Bag construction differences.}
-The paper samples 20 random 224$\times$224 patches per image for its MIL baseline. Our end-to-end reproduction matches this exactly. The frozen-backbone variant uses a deterministic 5$\times$7 grid of 35 non-overlapping patches instead, enabling offline embedding extraction. Although the grid bags are larger, they guarantee full spatial coverage and make evaluation perfectly reproducible — a relevant advantage for ablation studies.
+\paragraph{Bag construction.}
+The paper uses 20 stochastic crops per image; our end-to-end MIL matches this exactly. The frozen variant uses a deterministic 5$\times$7 grid (35 patches) for reproducible offline extraction, providing exhaustive spatial coverage at the cost of including more uninformative tiles.
 
 % =========================
-\section{Attempts at Solving the Problem}
+\section{Challenges and Reproducibility}
 \label{sec:attempts}
 
-\subsection{Environment and Reproducibility}
-During local setup we resolved several environment issues: CUDA/cuDNN library visibility under WSL, TensorFlow–protobuf version alignment, and missing default dataset paths (\texttt{data/data.csv}). We additionally had to correct an early MIL implementation bug where patches were extracted from a downscaled 300$\times$400 image rather than the full 1200$\times$1600 original; this fix restored the micro-texture information that attention mechanisms rely on.
-
-\subsection{Module Reload Fixes}
-A \texttt{NameError} during iterative notebook development (reloading \texttt{pytorch\_mil} before it was imported) was resolved by ensuring the import precedes the \texttt{importlib.reload} call. These reproducibility fixes are documented in the repository.
+Environment issues (CUDA/cuDNN library resolution under WSL, TensorFlow–protobuf alignment, and missing dataset path defaults) were resolved to enable stable training. A critical MIL bug — patches extracted from a downscaled 300$\times$400 image rather than the full 1200$\times$1600 original — was corrected to restore micro-texture information. All code and trained weights are available at \cite{skattoju}.
 
 % =========================
 \section{Future Steps}
 \label{sec:future}
 
 \begin{enumerate}
-    \item \textbf{Complete frozen-MIL evaluation:} populate \cref{tab:frozen_mil,tab:comparison} with final test metrics for self-attention and gated-attention aggregators.
-    \item \textbf{Domain-adapted backbones:} replace ImageNet ResNet50 with a histopathology-specific encoder (UNI, CONCH, or PLIP) to close the domain gap for frozen-feature MIL.
-    \item \textbf{Vision Transformer extension:} evaluate ViT (default and fine-tuned) as an alternative backbone, as planned.
-    \item \textbf{Qualitative interpretability:} Grad-CAM overlays for the CNN and attention-weight heatmaps for the MIL models to verify that salient regions correspond to clinically meaningful morphological features.
-    \item \textbf{Confidence intervals:} report mean $\pm$ std over multiple runs (different seeds) to quantify variance in the small-data regime.
+\item \textbf{Domain-adapted backbones:} replace ImageNet ResNet50 with UNI, CONCH, or PLIP to close the ImageNet domain gap and improve SCC recall.
+\item \textbf{Vision Transformer extension:} evaluate ViT (default and fine-tuned) as an alternative backbone.
+\item \textbf{Interpretability:} Grad-CAM overlays for CNN and attention-weight heatmaps for MIL to validate that salient regions correspond to clinically meaningful features.
+\item \textbf{Statistical validation:} report mean $\pm$ std over multiple random seeds to quantify variance in the small-data regime.
 \end{enumerate}
 
 % =========================
-\section{References}
-\label{sec:refs}
-
+\section*{References}
 \begin{thebibliography}{9}
-
-\bibitem{lunghist700}
-LungHist700 Dataset — open-source repository.\\
-\url{https://github.com/jorgediosdado/LungHist700}
-
-\bibitem{skattoju}
-S. Kattoju. LungHist700 PyTorch implementation and MIL extensions.\\
-\url{https://github.com/skattoju/LungHist700/}
 
 \bibitem{lunghist700paper}
 J. Marino, S. Khan \etal\
 LungHist700: A Dataset of Histological Images for Deep Learning in Pulmonary Pathology.
 \textit{Scientific Data}, 2024.
 
+\bibitem{skattoju}
+S. Kattoju. LungHist700 PyTorch implementation and MIL extensions.
+\url{https://github.com/skattoju/LungHist700/}
+
 \bibitem{resnet}
-K. He, X. Zhang, S. Ren, and J. Sun.
+K. He, X. Zhang, S. Ren, J. Sun.
 Deep Residual Learning for Image Recognition.
-In \textit{CVPR}, 2016.
+\textit{CVPR}, 2016.
 
 \bibitem{ilse2018}
-M. Ilse, J. Tomczak, and M. Welling.
+M. Ilse, J. Tomczak, M. Welling.
 Attention-based Deep Multiple Instance Learning.
-In \textit{ICML}, 2018.
+\textit{ICML}, 2018.
 
 \end{thebibliography}
-
-% =========================
-\section*{Supplementary Material (Appendix)}
-
-\noindent\textbf{Bag construction detail.}
-The end-to-end MIL bags 20 random 224$\times$224 crops per image (matching the paper). The frozen MIL uses a deterministic 5$\times$7 grid of 35 non-overlapping patches from the 1200$\times$1600 original image, enabling offline embedding caching.
-
-\noindent\textbf{Environment.}
-PyTorch 2.x, CUDA 12, WSL2/Fedora, GPU: NVIDIA (detected via \texttt{torch.cuda.is\_available()}). TensorFlow baseline additionally required resolving CUDA library paths and protobuf version pinning.
 
 \end{document}
