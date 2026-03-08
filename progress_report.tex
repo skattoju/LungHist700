@@ -286,7 +286,56 @@ Stochastic bag?      & Yes (per epoch) & Yes (per epoch) & No (cached) \\
 \noindent The frozen MIL uses a larger, deterministic bag (35 patches from a 5$\times$7 grid) to support offline embedding extraction. This guarantees exhaustive spatial coverage and perfectly reproducible evaluation at the cost of including more uninformative patches (stroma, background) — which the gated attention head learns to suppress. The stochastic end-to-end bags implicitly augment training by presenting different patch subsets per epoch, but may miss small discriminative regions if unlucky in a given sampling.
 
 % -----------------------------------------------------------------------
-\subsection*{E\quad Environment and Reproducibility Details}
+\subsection*{E\quad Data Augmentation Details}
+% -----------------------------------------------------------------------
+
+\noindent The original LungHist700 paper~\cite{lunghist700paper} states only that augmentations were ``dynamically generated using the Albumentations library'' during training, without enumerating the specific transforms. Our pipeline is more specifically documented below.
+
+\paragraph{Augmentation strategy overview.}
+Three distinct augmentation configurations are used across pipelines:
+\begin{enumerate}
+    \item \textbf{CNN / End-to-End MIL (online, per-epoch):} augmentations are applied to each patch on-the-fly during every training step, so the model sees a different crop and colour variation at every epoch.
+    \item \textbf{Frozen MIL embedding extraction (offline, pre-computed):} because embeddings are cached to disk, augmentation cannot be applied on-the-fly. Instead, \textbf{5 augmented copies} of each training image's patches are pre-generated and saved as separate \texttt{.pt} files. During training, the dataset randomly selects one of these copies per sample per epoch.
+    \item \textbf{Validation / Test (all pipelines):} no spatial or colour augmentation; only ImageNet normalisation is applied to ensure deterministic evaluation.
+\end{enumerate}
+
+\begin{table}[h]
+\centering
+\caption{Augmentation transforms per pipeline and split (Albumentations). ImageNet normalisation: mean $(0.485, 0.456, 0.406)$, std $(0.229, 0.224, 0.225)$.}
+\label{tab:augmentation}
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{lcccc}
+\toprule
+ & \multicolumn{2}{c}{\textbf{CNN / E2E MIL}} & \multicolumn{2}{c}{\textbf{Frozen MIL}} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+Augmentation & Train & Val/Test & Offline Aug & Val/Test \\
+\midrule
+Resize to 300$\times$400           & \checkmark & \checkmark & --- & --- \\
+Random crop 224$\times$224         & \checkmark & \checkmark & --- & --- \\
+Grid crop 224$\times$224 (5$\times$7) & --- & --- & \checkmark & \checkmark \\
+Horizontal flip (p\,=\,0.5)       & \checkmark & --- & \checkmark & --- \\
+Vertical flip (p\,=\,0.5)         & \checkmark & --- & \checkmark & --- \\
+Grid distortion (p\,=\,0.2)       & \checkmark & --- & \checkmark & --- \\
+Random $\gamma$ (80--120, p\,=\,0.5) & \checkmark & --- & \checkmark & --- \\
+Brightness/contrast ($\pm$0.2, p\,=\,0.2) & \checkmark & --- & \checkmark & --- \\
+HSV jitter (p\,=\,0.2)            & \checkmark & --- & \checkmark & --- \\
+ImageNet normalize                 & \checkmark & \checkmark & \checkmark & \checkmark \\
+\midrule
+Augmented copies per image & \multicolumn{2}{c}{online (per-epoch)} & \multicolumn{2}{c}{5 pre-computed} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent\textbf{Notes:}
+\begin{itemize}
+    \item CNN downscales to 300$\times$400 before random cropping; MIL pipelines crop directly from the full 1200$\times$1600 image to preserve micro-texture detail.
+    \item Frozen MIL omits random cropping (patches are already 224$\times$224); grid distortion serves a complementary spatial deformation role.
+    \item Val/test bags in end-to-end MIL use random crops — consistent with the paper's approach of sampling patches at inference.
+    \item Colour augmentations (brightness/contrast, HSV, $\gamma$) act as a proxy for stain variation across scanner settings and tissue preparation protocols — a recognised challenge in computational pathology~\cite{tellez2019}.
+\end{itemize}
+
+% -----------------------------------------------------------------------
+\subsection*{F\quad Environment and Reproducibility Details}
 % -----------------------------------------------------------------------
 
 \begin{table}[h]
@@ -307,8 +356,6 @@ CNN Optimizer       & Adam, lr $= 1\times10^{-4}$ \\
 MIL Optimizer       & Adam, lr $= 1\times10^{-3}$ \\
 LR Schedule         & ReduceLROnPlateau (patience 2–3, factor 0.1–0.5) \\
 Early stopping      & Best val-loss checkpoint saved per run \\
-Augmentations       & Random crop, H/V-flip, grid distortion, \\
-                    & $\gamma$ jitter, brightness/contrast, HSV shift \\
 \bottomrule
 \end{tabular}
 \label{tab:env}
